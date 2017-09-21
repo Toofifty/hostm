@@ -1,0 +1,161 @@
+#!/bin/bash
+
+# Hosts file editor
+# Allows easy management of custom hostfile
+# entries.
+# 
+# Usage:
+#   hostm add <ip> <domain> [domain2...]  Adds each entry seperately to your hosts file
+#   hostm disable <ip>                    Disable all entries for an IP
+#   hostm disable <domain>                Disable all entries for a domain (usually a single entry)
+#   hostm enable <ip>                     Enable all entries for an IP
+#   hostm enable <domain>                 Enable all entries for a domain (usually a single entry)
+#   hostm get <ip>                        Get all entries for an IP
+#   hostm get <domain>                    Get all entries for a domain
+#   hostm delete <ip>                     Delete all entries for an IP
+#   hostm delete <domain>                 Delete all entries for a domain
+#   hostm alias <domain> <domain new>     Add an extra domain as an alias for a previous entry (new domain uses IP). If there is no previous entry <domain> will be used.
+
+path=(${0//\// })
+cmd=${path[@]:(-1)}
+host_file='/etc/hosts.t'
+
+start_block='### start hostm'
+end_block='### end hostm'
+
+ignore=("127\.0\.0\.1[[:space:]]*localhost" "255\.255\.255\.255[[:space:]]*broadcasthost" "::1[[:space:]]*localhost" "##")
+ignore_section=("## vagrant-hostmanager" "hostm ignore")
+
+if [[ $UID != 0 && $1 != 'get' ]]; then
+    echo "Please run this script with sudo to edit your hostfile."
+    echo "$ sudo $cmd $*"
+    exit 1
+fi
+
+if ! grep -xq "$end_block" $host_file; then
+    if [[ $UID != 0 ]]; then
+        echo "Please run this script with sudo to initialize the manager."
+        echo "$ sudo $cmd $*"
+        exit 1
+    fi
+    cp $host_file $host_file.$(date +%F.%T).hmbk
+    echo -e "\n$start_block\n$end_block" >> $host_file
+fi
+
+case "$1" in
+    clean|c)
+        echo -e "\nCleaning and organizing host file entries..."
+        section_ignore=0
+        bk=$host_file.$(date +%F.%T).hmbk
+        cp $host_file $bk
+        cat $host_file | while read -r line || [[ -n "$line" ]]; do
+            line_ignore=0
+            for section in "${ignore_section[@]}"; do
+                if [[ $line == *"$section"* ]]; then
+                    if [[ $section_ignore -eq 1 ]]; then section_ignore=0; else section_ignore=1; fi
+                    break
+                fi
+            done
+            for thing in "${ignore[@]}"; do
+                if [[ $line =~ $thing ]]; then
+                    line_ignore=1
+                    break
+                fi
+            done
+            if [[ $line == "#"* ]]; then
+                words=($line)
+                [[ ${words[0]} != *"."* ]] && line_ignore=1
+            fi
+            [[ ${#line} -eq 0 || line_ignore -eq 1 ]] && continue
+            if [[ $(($section_ignore + $line_ignore)) -eq 0 ]]; then
+                words=($line)
+                ip=$(printf "%-16s" ${words[0]})
+                if [[ $line == "#"* ]]; then
+                    ip=$(printf "%-17s" ${words[0]})
+                fi
+                domains=${words[@]:1}
+                for domain in ${domains[@]}; do
+                    echo "$ip$domain"
+                    sed -i '' "/$line/d" $host_file
+                    sed -i '' "s/$end_block/$ip$domain\\"$'\n'"$end_block/" $host_file
+                done
+            fi
+        done
+        echo -e "\n$host_file cleaned."
+        echo "Backup created at $bk"
+        ;;
+    add|a)
+        if [ $# -ge 3 ]; then
+            ip=$(printf "%-16s" $2)
+            domains=${@:3}
+            for domain in ${domains[@]}; do
+                if ! grep -xq "$ip$domain" $host_file; then
+                    echo -e "Added: $ip$domain"
+                    sed -i '' "s/$end_block/$ip$domain\\"$'\n'"$end_block/" $host_file
+                fi
+            done
+        else
+            echo "Usage: $cmd $1 <ip> <domain1> [domain2...]"
+        fi
+        ;;
+    enable|e)
+        echo 'enable'
+        ;;
+    disable|d)
+        echo 'disable'
+        ;;
+    get|g)
+        if [ $# -ge 2 ]; then
+            enabled=()
+            disabled=()
+            while read line
+            do
+                if [[ $line == "#"* ]]; then
+                    words=($line)
+                    if [[ ${words[0]} == *"."* ]]; then
+                        disabled+=("$line")
+                    fi
+                else
+                    enabled+=("$line")
+                fi
+            done < <(awk "/$2/" $host_file) 
+
+            echo -e "\n   | IP              | Domain"
+            echo -e   "===|=================|=========================="
+
+            if [ $# -eq 2 -o "$3" == 'enabled' ]; then
+                for entry in "${enabled[@]}"; do
+                    domains=($entry)
+                    ip=${domains[0]}
+                    domains=(${domains[@]:1})
+                    for domain in "${domains[@]}"; do
+                        printf " ✔ | %-15s | %s\n" $ip $domain
+                    done
+                done
+            fi
+
+            if [ $# -eq 2 -o "$3" == 'disabled' ]; then
+                for entry in "${disabled[@]}"; do
+                    domains=($entry)
+                    ip=${domains[0]}
+                    ip="${ip/\#/}"
+                    domains=(${domains[@]:1})
+                    for domain in "${domains[@]}"; do
+                        printf " ✗ | %-15s | %s\n" $ip $domain
+                    done
+                done
+            fi
+        else
+            echo $"Usage: $cmd $1 <ip|domain> [enabled|disabled]"
+        fi
+        ;;
+    delete|D)
+        echo 'delete'
+        ;;
+    alias|A)
+        echo 'alias'
+        ;;
+    *)
+        echo "Usage: $cmd add|enable|disable|get|delete|alias"
+        exit 1
+esac
