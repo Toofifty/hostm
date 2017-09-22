@@ -119,11 +119,6 @@ clean () {
     cat $host_file | while read -r line || [[ -n "$line" ]]; do
         # Skip blank / one word lines
         [[ ${#line} -le 1 ]] && continue
-        # Skip comments
-        [[ $(is_comment $line) -eq 1 ]] && continue
-        # Skip ignored patterns
-        [[ $(matches_ignore "$line") -eq 1 ]] && continue
-
         # Check if this line is the start/end of
         # an ignored section. This is used for
         # Vagrant's entries for example.
@@ -136,6 +131,11 @@ clean () {
                 break
             fi
         done
+        # Skip comments
+        [[ $(is_comment $line) -eq 1 ]] && continue
+        # Skip ignored patterns
+        [[ $(matches_ignore "$line") -eq 1 ]] && continue
+
         if [[ $section_ignore -eq 0 ]]; then
             words=($line)
             hsh=' '
@@ -169,6 +169,106 @@ clean () {
     echo -e "\n$host_file cleaned."
 }
 
+# Uncomment a group of entries that
+# contain the search term
+enable_entry () {
+    while read line; do
+        if [[ $line = "#"* && $(matches_ignore "$line") -eq 0 ]]; then
+            words=($line)
+            [[ ${words[0]} == *"."* ]] && disabled+=("$line")
+        fi
+    done < <(awk "/$2/" $host_file)
+    echo -e "\nEnabling:"
+    for entry in "${disabled[@]}"; do
+        domains=($entry)
+        ip=${domains[0]}
+        ip=$(format_ip "${ip/\#/}")
+        domains=(${domains[@]:1})
+        sed -i '' "s/#$ip$domains/ $ip$domains/" $host_file
+        echo "$ip$domains"
+    done
+}
+
+# Comment a group of entries that
+# contain the search term
+disable_entry () {
+    while read line; do
+        [[ $line != "#"* && $(matches_ignore "$line") -eq 0 ]] && enabled+=("$line")
+    done < <(awk "/$2/" $host_file)
+    echo -e "\nDisabling:"
+    for entry in "${enabled[@]}"; do
+        domains=($entry)
+        ip=$(format_ip "${domains[0]}")
+        domains=(${domains[@]:1})
+        sed -i '' "s/ $ip$domains/#$ip$domains/" $host_file
+        echo "$ip$domains"
+    done
+}
+
+get () {
+    if [ $# -ge 2 ]; then
+        enabled=()
+        disabled=()
+        while read line
+        do
+            if [[ $line == "#"* ]]; then
+                words=($line)
+                if [[ ${words[0]} == *"."* || ${words[1]} == *"."* ]]; then
+                    disabled+=("${words[@]}")
+                fi
+            else
+                enabled+=("$line")
+            fi
+        done < <(awk "/$2/" $host_file)
+
+        echo -e "\n   | IP              | Domain"
+        echo -e   "===|=================|=========================="
+
+        if [ $# -eq 2 -o "$3" == 'enabled' ]; then
+            for entry in "${enabled[@]}"; do
+                domains=($entry)
+                ip=${domains[0]}
+                domains=(${domains[@]:1})
+                for domain in "${domains[@]}"; do
+                    printf " ✔ | %-15s | %s\n" $ip $domain
+                done
+            done
+        fi
+
+        if [ $# -eq 2 -o "$3" == 'disabled' ]; then
+            for entry in "${disabled[@]}"; do
+                domains=($entry)
+                ip=${domains[0]}
+                ip="${ip/\#/}"
+                domains=(${domains[@]:1})
+                for domain in "${domains[@]}"; do
+                    printf " ✗ | %-15s | %s\n" $ip $domain
+                done
+            done
+        fi
+        echo
+    else
+        echo "Usage: $cmd $1 <ip|domain> [enabled|disabled]"
+    fi
+}
+
+alias_entry () {
+    echo 'alias'
+}
+
+# Bind a name to an entry.
+# If a name is set, the name will be appended
+# to all entries that use that IP.
+# Can be used to mass enable/disable a single
+# server
+name () {
+    if [[ ! $# -eq 4 ]]; then
+        echo "GGood"
+    else
+        echo "Usage: $cmd $1 <ip> <name>"
+    fi
+}
+
 # Check for sudo unless we are only
 # reading the hosts file
 if [[ $UID != 0 && $1 != 'get' ]]; then
@@ -198,70 +298,20 @@ fi
 case "$1" in
     clean|c)   clean $*;;
     add|a)     add $*;;
-    enable|e)
-        echo 'enable'
-        ;;
-    disable|d)
-        echo 'disable'
-        ;;
-    get|g)
-        if [ $# -ge 2 ]; then
-            enabled=()
-            disabled=()
-            while read line
-            do
-                if [[ $line == "#"* ]]; then
-                    words=($line)
-                    if [[ ${words[0]} == *"."* || ${words[1]} == *"."* ]]; then
-                        disabled+=("${words[@]}")
-                    fi
-                else
-                    enabled+=("$line")
-                fi
-            done < <(awk "/$2/" $host_file)
-
-            echo -e "\n   | IP              | Domain"
-            echo -e   "===|=================|=========================="
-
-            if [ $# -eq 2 -o "$3" == 'enabled' ]; then
-                for entry in "${enabled[@]}"; do
-                    domains=($entry)
-                    ip=${domains[0]}
-                    domains=(${domains[@]:1})
-                    for domain in "${domains[@]}"; do
-                        printf " ✔ | %-15s | %s\n" $ip $domain
-                    done
-                done
-            fi
-
-            if [ $# -eq 2 -o "$3" == 'disabled' ]; then
-                for entry in "${disabled[@]}"; do
-                    domains=($entry)
-                    ip=${domains[0]}
-                    ip="${ip/\#/}"
-                    domains=(${domains[@]:1})
-                    for domain in "${domains[@]}"; do
-                        printf " ✗ | %-15s | %s\n" $ip $domain
-                    done
-                done
-            fi
-            echo
-        else
-            echo $"Usage: $cmd $1 <ip|domain> [enabled|disabled]"
-        fi
-        ;;
+    enable|e)  enable_entry $*;;
+    disable|d) disable_entry $*;;
     delete|D)
-        if [ $# -ge 2 ]; then
-            while read line; do
-                if [[ $line == "#"* ]]; then
-                    echo a
-                fi
-            done < <(awk "/$2/" $host_file)
-        fi
+        # if [ $# -ge 2 ]; then
+        #     while read line; do
+        #         if [[ $line == "#"* ]]; then
+        #             echo a
+        #         fi
+        #     done < <(awk "/$2/" $host_file)
+        # fi
         ;;
-    alias|A)
-        echo 'alias'
-        ;;
+    get|g)     get $*;;
+    alias|A)   alias_entry $*;;
+    name|n)    name $*;;
     *)
         echo "Usage: $cmd add|enable|disable|get|delete|alias"
         exit 1
